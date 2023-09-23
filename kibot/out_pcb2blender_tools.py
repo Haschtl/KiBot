@@ -9,7 +9,8 @@ import json
 import os
 import re
 import struct
-from typing import List
+from typing import List, Tuple
+from enum import IntEnum
 from pcbnew import B_Paste, F_Paste, PCB_TEXT_T, ToMM
 from .gs import GS
 from .misc import (MOD_THROUGH_HOLE, MOD_SMD, UI_VIRTUAL, W_UNKPCB3DTXT, W_NOPCB3DBR, W_NOPCB3DTL, W_BADPCB3DTXT,
@@ -36,6 +37,58 @@ class BoardDef:
     bounds: List[float]
     stacked_boards: List[StackedBoard] = field(default_factory=list)
 
+class KiCadColor(IntEnum):
+    CUSTOM = 0
+    GREEN  = 1
+    RED    = 2
+    BLUE   = 3
+    PURPLE = 4
+    BLACK  = 5
+    WHITE  = 6
+    YELLOW = 7
+
+class SurfaceFinish(IntEnum):
+    HASL = 0
+    ENIG = 1
+    NONE = 2
+
+SURFACE_FINISH_MAP = {
+    "ENIG": SurfaceFinish.ENIG,
+    "ENEPIG": SurfaceFinish.ENIG,
+    "Hard gold": SurfaceFinish.ENIG,
+    "HT_OSP": SurfaceFinish.NONE,
+    "OSP": SurfaceFinish.NONE,
+}
+
+def hex2rgb(hex_string):
+    return (
+        int(hex_string[0:2], 16),
+        int(hex_string[2:4], 16),
+        int(hex_string[4:6], 16),
+    )
+
+def parse_kicad_color(string):
+    if string[0] == "#":
+        return KiCadColor.CUSTOM, hex2rgb(string[1:7])
+    else:
+        return KiCadColor[string.upper()], (0, 0, 0)
+
+@dataclass
+class Stackup:
+    thickness_mm: float = 1.6
+    mask_color: KiCadColor = KiCadColor.GREEN
+    mask_color_custom: Tuple[int, int, int] = (0, 0, 0)
+    silks_color: KiCadColor = KiCadColor.WHITE
+    silks_color_custom: Tuple[int, int, int] = (0, 0, 0)
+    surface_finish: SurfaceFinish = SurfaceFinish.HASL
+
+    def pack(self) -> bytes:
+        return struct.pack("!fbBBBbBBBb",
+            self.thickness_mm,
+            self.mask_color, *self.mask_color_custom,
+            self.silks_color, *self.silks_color_custom,
+            self.surface_finish,
+        )
 
 def sanitized(name):
     """ Replace character that aren't alphabetic by _ """
@@ -58,8 +111,10 @@ class PCB2Blender_ToolsOptions(VariantOptions):
             """ Create the files containing the PCB pads information """
             self.pads_info_dir = 'pads'
             """ Sub-directory where the pads info files are stored """
-            self.stackup_create = False
+            self.stackup_create = True
             """ Create a JSON file containing the board stackup """
+            self.stackup_file2 = 'stackup'
+            """ Name for the stackup file """
             self.stackup_file = 'board.yaml'
             """ Name for the stackup file """
             self.stackup_dir = '.'
@@ -152,6 +207,7 @@ class PCB2Blender_ToolsOptions(VariantOptions):
         dir_name = os.path.join(dir_name, self.stackup_dir)
         os.makedirs(dir_name, exist_ok=True)
         fname = os.path.join(dir_name, self.stackup_file)
+        fname2 = os.path.join(dir_name, self.stackup_file2)
         # Create the board_info
         board_info = {}
         if GS.global_pcb_finish:
@@ -168,8 +224,26 @@ class PCB2Blender_ToolsOptions(VariantOptions):
             board_info['stackup'] = layers_parsed
         data = json.dumps(board_info, indent=3)
         logger.debug('Stackup: '+str(data))
+        # Write the boardinfo
+        stackup2=self.get_stackup(board_info).pack()
         with open(fname, 'wt') as f:
             f.write(data)
+        with open(fname2, 'wb') as f:
+            f.write(stackup2)
+
+    def get_stackup(self, board_info):
+        stackup = Stackup()
+        for layer in board_info['stackup']:
+            if layer["type"]=="core" and "thickness" in layer:
+                stackup.thickness_mm =layer["thickness"]
+            if layer["type"]=="Top Solder Mask":
+                stackup.mask_color, stackup.mask_color_custom = parse_kicad_color(layer["color"])
+            if layer["type"]=="Top Silk Screen":
+                stackup.silks_color, stackup.silks_color_custom = parse_kicad_color(layer["color"])
+        if "copper_finish" in board_info and board_info["copper_finish"]!="None":
+            stackup.surface_finish = SURFACE_FINISH_MAP.get(board_info["copper_finish"], SurfaceFinish.HASL)
+
+        return stackup
 
     def get_boarddefs(self):
         """ Extract the sub-PCBs and their positions using texts.
@@ -287,6 +361,7 @@ class PCB2Blender_ToolsOptions(VariantOptions):
                     files.append(os.path.join(dir_name, sanitized("{}_{}_{}_{}".format(value, reference, i, j))))
         if self.stackup_create and (GS.global_pcb_finish or GS.stackup):
             files.append(os.path.join(out_dir, self.stackup_dir, self.stackup_file))
+            files.append(os.path.join(out_dir, self.stackup_dir, self.stackup_file2))
         if self.sub_boards_create:
             dir_name = os.path.join(out_dir, self.sub_boards_dir)
             boarddefs = self.get_boarddefs()

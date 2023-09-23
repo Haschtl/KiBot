@@ -428,7 +428,7 @@ class Blender_ExportOptions(BaseOptions):
                 'type': 'pcb2blender_tools',
                 'comment': 'Internally created for the PCB3D',
                 'dir': dest_dir,
-                'options': {'stackup_create': self.pcb3d.version == '2.1_haschtl'}}
+                'options': {'stackup_create': True}}
         if self.pcb3d.solder_paste_for_populated:
             sc = 'all'
             if not self.pcb3d._show_all_components:
@@ -463,6 +463,10 @@ class Blender_ExportOptions(BaseOptions):
                                       {'source': os.path.join(data_dir, 'pads/*'),
                                        'dest': 'pads'},
                                       {'source': os.path.join(data_dir, 'pcb.wrl'),
+                                       'dest': '/'},
+                                      {'source': os.path.join(data_dir, 'stackup'),
+                                       'dest': '/'},
+                                      {'source': os.path.join(data_dir, 'board.yaml'),
                                        'dest': '/'},
                                       ]}}
         configure_and_run(tree, out_dir, ' - Creating the PCB3D ...')
